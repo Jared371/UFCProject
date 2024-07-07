@@ -18,7 +18,7 @@ rawCount = 0
 rawFailcount =0 
 finalCount=0
 finalFailCount=0
-file_path = 'C:\\Users\\Jared\\Desktop\\ufcData.csv'
+file_path = 'C:\\Users\\Jared\\Desktop\\UFCData.csv'
 try:
     with open(file_path, 'r+') as file:  # Try to open the file in read/write mode
         file.truncate(0)  # Clear file
@@ -162,6 +162,8 @@ def webScrapeRawData():
     response = session.get(url, timeout=10)
     soup = BeautifulSoup(response.text, 'html.parser')
     events_table = soup.select_one('.b-statistics__table-events')
+    rawCount=0
+    rawFailcount=0
     if events_table:
         print("[Event, Date, WinningFighter, LosingFighter, Method, WeightClass, WinningFighterBirthday, LosingFighterBirthday, ChampBoutBool, GenderBool]\n")
         rows = events_table.find_all('tr')
@@ -195,8 +197,8 @@ def calculateAge(birthday, event_date):
 
 def processRawData():
     global finalCount, finalFailCount
-    rawCount = 0
-    rawFailcount = 0
+    finalCount = 0
+    finalFailCount = 0
     for fight in rawData:
         event_date_str = fight[1]
         print(f"Processing fight for event date: {event_date_str}")  # Debug statement
@@ -217,7 +219,7 @@ def processRawData():
         processedFight[3] = len([f for f in rawData if (f[2] == winner_name or f[3] == winner_name) and datetime.strptime(f[1], "%B %d, %Y") <= event_date])  # Total
         processedFight[4] = float(processedFight[2]) / float(processedFight[3]) if processedFight[3] != 0 else 0  # WinPercentage
 
-        if all(processedFight[:6]):
+        if processedFight[0] and processedFight[1] and processedFight[5]:
             finalData.append(processedFight.copy())
             finalCount += 1
             print(f'{processedFight}\nFighter Data Processed : {finalCount}\n')
@@ -242,16 +244,17 @@ def processRawData():
         processedFight[3] = len([f for f in rawData if (f[2] == loser_name or f[3] == loser_name) and datetime.strptime(f[1], "%B %d, %Y") <= event_date])  # Total
         processedFight[4] = float(processedFight[2]) / float(processedFight[3]) if processedFight[3] != 0 else 0  # WinPercentage
 
-        if all(processedFight[:6]):
+        if processedFight[0] and processedFight[1] and processedFight[5]:
             finalData.append(processedFight.copy())
-            print(f'{processedFight}\nFighter Data Processed : {rawCount}\n')
+            finalCount += 1
+            print(f'{processedFight}\nFighter Data Processed : {finalCount}\n')
         else:
             print("\n-----Fighter Data Failed to Process-----\n")
-            rawFailcount += 1
-            print(f'\n{processedFight}\nFighter Data Failed : {rawFailcount}')
+            finalFailCount += 1
+            print(f'\n{processedFight}\nFighter Data Failed : {finalFailCount}')
             print("\n---------------\n")
     print("\nFighter Data Finished being Processed!\n")
-    print(f"Fighter Data Processed : {rawCount}\nFighter Data Failed : {rawFailcount}\n")
+    print(f"Fighter Data Processed : {finalCount}\nFighter Data Failed : {finalFailCount}\n")
 
 def main():
     webScrapeRawData()
@@ -260,7 +263,7 @@ def main():
         writeToCSV(fighterData)
     print("\nCSV is Done!\n")
     print(f"Fights Processed : {rawCount}\nFights Failed : {rawFailcount}\n")
-    print(f"Fighter Data Processed : {rawCount}\nFighter Data Failed : {rawFailcount}\n")
+    print(f"Fighter Data Processed : {finalCount}\nFighter Data Failed : {finalFailCount}\n")
     
 if __name__ == "__main__":
     main()
