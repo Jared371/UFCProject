@@ -14,8 +14,10 @@ birthday_cache = OrderedDict()
 exitKey = 'ufc 27:'  # Define the exitKey variable
 #exitKey = 'ufc 302:'  # Define the exitKey variable
 exitDate = ''
-count = 0
-fcount =0 
+rawCount = 0
+rawFailcount =0 
+finalCount=0
+finalFailCount=0
 file_path = 'C:\\Users\\Jared\\Desktop\\ufcData.csv'
 try:
     with open(file_path, 'r+') as file:  # Try to open the file in read/write mode
@@ -55,17 +57,22 @@ def findMonth(text):
     # Create a regex pattern to match the month names
     month_pattern = re.compile(r'(' + '|'.join(months) + r')')
     match = month_pattern.search(str(text))
-    if match:
+    if match != -1:
         result = True
-    return result, match
+    return result
 
 def splitOnMonth(text):
-    match = findMonth(text)
-    if match[0]:
-        before_month = text[:match[1].start()].strip()
-        from_month_onward = text[match[1].start():].strip()
+
+    months = ["January", "February", "March", "April", "May", "June", 
+              "July", "August", "September", "October", "November", "December"]
+    # Create a regex pattern to match the month names
+    month_pattern = re.compile(r'\b(' + '|'.join(months) + r')\b')
+    match = month_pattern.search(str(text))
+
+    if match:
+        before_month = text[:match.start()].strip()
+        from_month_onward = text[match.start():].strip()
         return before_month, from_month_onward
-    
     return '', ''
 
 def writeToCSV(row):
@@ -90,9 +97,9 @@ def getFighterBirthday(fighter_url):
         response = session.get(fighter_url, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
         birthday_element = soup.select_one('div.b-list__info-box:nth-child(1) > ul:nth-child(1) > li:nth-child(5)')
-        if birthday_element and findMonth(birthday_element):
+        if birthday_element:
             birthday = birthday_element.get_text(strip=True).replace('DOB:', '').strip()
-            if findMonth(birthday[0]) and findMonth(birthday[1]):
+            if findMonth(birthday):
                 # Check if we need to remove the least recently used item before adding new item
                 if len(birthday_cache) >= 750:
                     removed_url, removed_birthday = birthday_cache.popitem(last=False)  # Remove the oldest item
@@ -110,7 +117,7 @@ def getFighterBirthday(fighter_url):
     return ''
 
 def processFight(FightData, event, date):
-    global count, fcount
+    global rawCount, rawFailcount
     rowData = [None] * 10
     rowData[0] = str(event)
     rowData[1] = str(date)
@@ -140,13 +147,13 @@ def processFight(FightData, event, date):
                 rowData[6], rowData[7] = getFighterBirthday(fighter_links[1]), getFighterBirthday(fighter_links[2])
                 rowData[8], rowData[9] = retFighterBooleans(fighter_links[0])
         if all(rowData[:8]):
-            count += 1
+            rawCount += 1
             rawData.append(rowData)
-            print(f'{rowData}\nFights WebScraped : {count}\n')
+            print(f'{rowData}\nFights WebScraped : {rawCount}\n')
         else:
             print("\n-----Fight Failed to WebScrape-----\n")
-            fcount += 1
-            print(f'\n{rowData}\nFights Failed : {fcount}')
+            rawFailcount += 1
+            print(f'\n{rowData}\nFights Failed : {rawFailcount}')
             print("\n---------------\n")
 
 def webScrapeRawData():
@@ -176,7 +183,7 @@ def webScrapeRawData():
         print("\nWebScrape done!\n")
     else:
         print("\nEvent table not found on page\n")
-    print(f"Fights Processed : {count}\nFights Failed : {fcount}\n")
+    print(f"Fights Processed : {rawCount}\nFights Failed : {rawFailcount}\n")
 
 def calculateAge(birthday, event_date):
     print(f"Calculating age with birthday: {birthday} and event_date: {event_date}")  # Debug statement
@@ -187,9 +194,9 @@ def calculateAge(birthday, event_date):
     return age
 
 def processRawData():
-    global count, fcount
-    count = 0
-    fcount = 0
+    global finalCount, finalFailCount
+    rawCount = 0
+    rawFailcount = 0
     for fight in rawData:
         event_date_str = fight[1]
         print(f"Processing fight for event date: {event_date_str}")  # Debug statement
@@ -212,11 +219,12 @@ def processRawData():
 
         if all(processedFight[:6]):
             finalData.append(processedFight.copy())
-            print(f'{processedFight}\nFighter Data Wrocessed : {count}\n')
+            finalCount += 1
+            print(f'{processedFight}\nFighter Data Processed : {finalCount}\n')
         else:
             print("\n-----Fighter Data Failed to Process-----\n")
-            fcount += 1
-            print(f'\n{processedFight}\nFights Failed : {fcount}')
+            finalFailCount += 1
+            print(f'\n{processedFight}\nFights Failed : {finalFailCount}')
             print("\n---------------\n")
 
         processedFight[0] = '' # Name
@@ -236,14 +244,14 @@ def processRawData():
 
         if all(processedFight[:6]):
             finalData.append(processedFight.copy())
-            print(f'{processedFight}\nFighter Data Processed : {count}\n')
+            print(f'{processedFight}\nFighter Data Processed : {rawCount}\n')
         else:
             print("\n-----Fighter Data Failed to Process-----\n")
-            fcount += 1
-            print(f'\n{processedFight}\nFighter Data that Failed to Process Failed : {fcount}')
+            rawFailcount += 1
+            print(f'\n{processedFight}\nFighter Data Failed : {rawFailcount}')
             print("\n---------------\n")
     print("\nFighter Data Finished being Processed!\n")
-    print(f"Fighter Data Processed : {count}\nFighter Data that Failed to Process Failed : {fcount}\n")
+    print(f"Fighter Data Processed : {rawCount}\nFighter Data Failed : {rawFailcount}\n")
 
 def main():
     webScrapeRawData()
@@ -251,6 +259,8 @@ def main():
     for fighterData in finalData:
         writeToCSV(fighterData)
     print("\nCSV is Done!\n")
+    print(f"Fights Processed : {rawCount}\nFights Failed : {rawFailcount}\n")
+    print(f"Fighter Data Processed : {rawCount}\nFighter Data Failed : {rawFailcount}\n")
     
 if __name__ == "__main__":
     main()
