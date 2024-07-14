@@ -1,0 +1,198 @@
+library(lme4)
+library(broom)
+library(dplyr)
+library(ggplot2)
+library(pROC)
+library(tidyr)
+library(zoo)
+
+# Create a directory to save the output files
+output_dir <- "C:/Users/Jared/Desktop/UFCAnalysis"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+
+# Load the data
+data <- read.csv("C:\\Users\\Jared\\Desktop\\UFCData5.csv")
+
+# Recursive function to filter out fighters with less than 5 fights
+filter_fighters_recursive <- function(data) {
+  repeat {
+    # Count the number of appearances per fighter
+    fight_counts <- data %>%
+      group_by(Fighter) %>%
+      summarise(fight_count = n()) %>%
+      ungroup()
+    
+    # Identify fighters with less than 5 fights
+    fighters_with_less_than_5 <- fight_counts %>%
+      filter(fight_count < 5)
+    
+    # Break if no fighters with less than 5 fights are found
+    if (nrow(fighters_with_less_than_5) == 0) {
+      print("No fighters with less than 5 fights found. Stopping.")
+      break
+    }
+    
+    # Remove all rows where any of the fighters to remove are either Fighter or Opponent
+    data <- data %>%
+      filter(!(Fighter %in% fighters_with_less_than_5$Fighter | Opponent %in% fighters_with_less_than_5$Fighter))
+  }
+  return(data)
+}
+
+# Apply the recursive filtering function
+data_filtered <- filter_fighters_recursive(data)
+
+# Prepare data
+data_long <- data_filtered %>%
+  rename(fight_id = FightID, 
+         fighter = Fighter, 
+         opponent = Opponent, 
+         age = FighterAge, 
+         opponent_age = OpponentAge, 
+         outcome = Outcome,
+         weight_class = WeightClass,
+         gender = GenderBool,
+         champ = ChampBoutBool)
+
+# Standardize (center and scale) age-related variables
+data_long <- data_long %>%
+  mutate(age_standardized = scale(age, center = TRUE, scale = TRUE),
+         opponent_age_standardized = scale(opponent_age, center = TRUE, scale = TRUE))
+
+# Fit the model
+model <- glmer(outcome ~ poly(age_standardized, 2) + poly(opponent_age_standardized, 2) + (1|fighter) + (1|opponent), 
+               data = data_long, family = binomial)
+
+# Model summary
+model_summary <- summary(model)
+print(model_summary)
+
+# Find the age of decline for fighters
+# Use the quadratic formula: vertex = -b / (2a) for the quadratic term in poly(age_standardized, 2)
+age_coefs <- fixef(model)[grepl("poly\\(age_standardized,", names(fixef(model)))]
+a_fighter <- age_coefs[2] # coefficient of the squared term
+b_fighter <- age_coefs[1] # coefficient of the linear term
+age_vertex <- -b_fighter / (2 * a_fighter)
+print(paste("Age at which fighters decline the most:", age_vertex))
+
+# Find the age where opponents are the easiest to beat
+opponent_age_coefs <- fixef(model)[grepl("poly\\(opponent_age_standardized,", names(fixef(model)))]
+a_opponent <- opponent_age_coefs[2] # coefficient of the squared term
+b_opponent <- opponent_age_coefs[1] # coefficient of the linear term
+opponent_age_vertex <- -b_opponent / (2 * a_opponent)
+print(paste("Age at which opponents are the easiest to beat:", opponent_age_vertex))
+
+# Extract the mean and standard deviation used for standardization
+age_mean <- mean(data_long$age)
+age_sd <- sd(data_long$age)
+
+# Convert the standardized age to original age
+age_vertex_original <- age_vertex * age_sd + age_mean
+print(paste("Original age at which fighters decline the most:", age_vertex_original))
+
+# Extract the mean and standard deviation used for standardizing opponent age
+opponent_age_mean <- mean(data_long$opponent_age)
+opponent_age_sd <- sd(data_long$opponent_age)
+
+# Convert the standardized opponent age to original age
+opponent_age_vertex_original <- opponent_age_vertex * opponent_age_sd + opponent_age_mean
+print(paste("Original age at which opponents are the easiest to beat:", opponent_age_vertex_original))
+
+# Goodness of Fit Analysis
+# Residuals
+residuals <- residuals(model, type = "pearson")
+
+# Plot residuals
+residual_plot <- ggplot(data_long, aes(x = fitted(model), y = residuals)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Residuals vs Fitted Values", x = "Fitted Values", y = "Residuals")
+ggsave(file.path(output_dir, "residual_plot.png"), plot = residual_plot)
+
+# ROC Curve
+roc_curve <- roc(data_long$outcome, fitted(model))
+auc <- auc(roc_curve)
+
+roc_plot <- ggplot(data = data.frame(tpr = roc_curve$sensitivities, fpr = 1 - roc_curve$specificities), 
+                   aes(x = fpr, y = tpr)) +
+  geom_line() +
+  geom_abline(linetype = "dashed") +
+  labs(title = paste("ROC Curve (AUC =", round(auc, 2), ")"), x = "False Positive Rate", y = "True Positive Rate")
+ggsave(file.path(output_dir, "roc_plot.png"), plot = roc_plot)
+
+# Calculate the predicted probabilities of winning based on age and opponent's age
+predict_data <- data_long %>%
+  mutate(predicted_prob = predict(model, type = "response"))
+
+# Probability of Winning by Age
+win_prob_by_age <- predict_data %>%
+  group_by(age) %>%
+  summarise(predicted_prob_mean = mean(predicted_prob))
+
+win_prob_by_age_plot <- ggplot(win_prob_by_age, aes(x = age, y = predicted_prob_mean)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(title = "Probability of Winning by Age", x = "Age", y = "Probability of Winning")
+ggsave(file.path(output_dir, "win_prob_by_age_plot.png"), plot = win_prob_by_age_plot)
+write.csv(win_prob_by_age, file.path(output_dir, "win_prob_by_age.csv"))
+
+# Probability of Winning by Opponent Age
+win_prob_by_opponent_age <- predict_data %>%
+  group_by(opponent_age) %>%
+  summarise(predicted_prob_mean = mean(predicted_prob))
+
+win_prob_by_opponent_age_plot <- ggplot(win_prob_by_opponent_age, aes(x = opponent_age, y = predicted_prob_mean)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(title = "Probability of Winning by Opponent Age", x = "Opponent Age", y = "Probability of Winning")
+ggsave(file.path(output_dir, "win_prob_by_opponent_age_plot.png"), plot = win_prob_by_opponent_age_plot)
+write.csv(win_prob_by_opponent_age, file.path(output_dir, "win_prob_by_opponent_age.csv"))
+
+# Additional Methods
+# QQ Plot
+qq_plot <- ggplot(data.frame(residuals = residuals), aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line() +
+  labs(title = "QQ Plot of Residuals", x = "Theoretical Quantiles", y = "Sample Quantiles")
+ggsave(file.path(output_dir, "qq_plot.png"), plot = qq_plot)
+
+# Leverage Plot
+leverage <- hatvalues(model)
+leverage_plot <- ggplot(data_long, aes(x = leverage, y = residuals)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Leverage vs Residuals", x = "Leverage", y = "Residuals")
+ggsave(file.path(output_dir, "leverage_plot.png"), plot = leverage_plot)
+
+# Smoothing Methods
+
+# 1. Moving Average
+win_prob_by_age$predicted_prob_ma <- rollmean(win_prob_by_age$predicted_prob_mean, k = 5, fill = NA)
+
+moving_average_plot <- ggplot(win_prob_by_age, aes(x = age)) +
+  geom_line(aes(y = predicted_prob_mean, color = "Predicted Probability")) +
+  geom_line(aes(y = predicted_prob_ma, color = "Moving Average")) +
+  labs(title = "Probability of Winning by Age with Moving Average", x = "Age", y = "Probability of Winning") +
+  scale_color_manual(values = c("Predicted Probability" = "blue", "Moving Average" = "red"))
+ggsave(file.path(output_dir, "moving_average_plot.png"), plot = moving_average_plot)
+
+# 2. LOESS
+loess_plot <- ggplot(win_prob_by_age, aes(x = age, y = predicted_prob_mean)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(title = "Probability of Winning by Age with LOESS Smoothing", x = "Age", y = "Probability of Winning")
+ggsave(file.path(output_dir, "loess_plot.png"), plot = loess_plot)
+
+# 3. Spline
+win_prob_by_age_no_na <- win_prob_by_age %>%
+  filter(!is.na(predicted_prob_mean) & !is.infinite(predicted_prob_mean))
+
+spline_fit <- smooth.spline(win_prob_by_age_no_na$age, win_prob_by_age_no_na$predicted_prob_mean)
+spline_data <- data.frame(age = win_prob_by_age_no_na$age, predicted_prob_spline = predict(spline_fit)$y)
+
+spline_plot <- ggplot(spline_data, aes(x = age, y = predicted_prob_spline)) +
+  geom_line(color = "green") +
+  labs(title = "Probability of Winning by Age with Spline Smoothing", x = "Age", y = "Probability of Winning")
+ggsave(file.path(output_dir, "spline_plot.png"), plot = spline_plot)
