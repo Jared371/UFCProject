@@ -5,11 +5,22 @@ library(ggplot2)
 library(pROC)
 library(tidyr)
 library(zoo)
+library(plot3D)
+library(effects)
+library(caret)
+library(MASS)
+library(lattice)
 
-# Create a directory to save the output files
+# Create directories to save the output files
 output_dir <- "C:/Users/Jared/Desktop/UFCAnalysis"
 if (!dir.exists(output_dir)) {
   dir.create(output_dir)
+}
+
+# Create subdirectory for mixed effects plots
+mixed_effects_dir <- file.path(output_dir, "mixed_effects")
+if (!dir.exists(mixed_effects_dir)) {
+  dir.create(mixed_effects_dir)
 }
 
 # Load the data
@@ -18,23 +29,19 @@ data <- read.csv("C:\\Users\\Jared\\Desktop\\UFCData5.csv")
 # Recursive function to filter out fighters with less than 5 fights
 filter_fighters_recursive <- function(data) {
   repeat {
-    # Count the number of appearances per fighter
     fight_counts <- data %>%
       group_by(Fighter) %>%
       summarise(fight_count = n()) %>%
       ungroup()
     
-    # Identify fighters with less than 5 fights
     fighters_with_less_than_5 <- fight_counts %>%
       filter(fight_count < 5)
     
-    # Break if no fighters with less than 5 fights are found
     if (nrow(fighters_with_less_than_5) == 0) {
       print("No fighters with less than 5 fights found. Stopping.")
       break
     }
     
-    # Remove all rows where any of the fighters to remove are either Fighter or Opponent
     data <- data %>%
       filter(!(Fighter %in% fighters_with_less_than_5$Fighter | Opponent %in% fighters_with_less_than_5$Fighter))
   }
@@ -56,143 +63,378 @@ data_long <- data_filtered %>%
          gender = GenderBool,
          champ = ChampBoutBool)
 
-# Standardize (center and scale) age-related variables
-data_long <- data_long %>%
-  mutate(age_standardized = scale(age, center = TRUE, scale = TRUE),
-         opponent_age_standardized = scale(opponent_age, center = TRUE, scale = TRUE))
+# Convert fighter and opponent to factors
+data_long$fighter <- factor(data_long$fighter)
+data_long$opponent <- factor(data_long$opponent)
 
-# Fit the model
-model <- glmer(outcome ~ poly(age_standardized, 2) + poly(opponent_age_standardized, 2) + (1|fighter) + (1|opponent), 
+# Fit the full model without standardizing age-related variables
+model <- glmer(outcome ~ poly(age, 2) + poly(opponent_age, 2) + (1|fighter) + (1|opponent), 
                data = data_long, family = binomial)
 
-# Model summary
-model_summary <- summary(model)
-print(model_summary)
+# Fit the null model
+null_model <- glmer(outcome ~ 1 + (1|fighter) + (1|opponent), 
+                    data = data_long, family = binomial)
 
-# Find the age of decline for fighters
-# Use the quadratic formula: vertex = -b / (2a) for the quadratic term in poly(age_standardized, 2)
-age_coefs <- fixef(model)[grepl("poly\\(age_standardized,", names(fixef(model)))]
-a_fighter <- age_coefs[2] # coefficient of the squared term
-b_fighter <- age_coefs[1] # coefficient of the linear term
-age_vertex <- -b_fighter / (2 * a_fighter)
-print(paste("Age at which fighters decline the most:", age_vertex))
+# Perform Likelihood Ratio Test
+lrt_result <- anova(null_model, model)
 
-# Find the age where opponents are the easiest to beat
-opponent_age_coefs <- fixef(model)[grepl("poly\\(opponent_age_standardized,", names(fixef(model)))]
-a_opponent <- opponent_age_coefs[2] # coefficient of the squared term
-b_opponent <- opponent_age_coefs[1] # coefficient of the linear term
-opponent_age_vertex <- -b_opponent / (2 * a_opponent)
-print(paste("Age at which opponents are the easiest to beat:", opponent_age_vertex))
+# Save LRT results to a text file
+lrt_output <- capture.output(lrt_result)
+lrt_path <- file.path(output_dir, "likelihood_ratio_test.txt")
+writeLines(lrt_output, lrt_path)
 
-# Extract the mean and standard deviation used for standardization
-age_mean <- mean(data_long$age)
-age_sd <- sd(data_long$age)
+# Capture the summary output
+summary_output <- capture.output(summary(model))
 
-# Convert the standardized age to original age
-age_vertex_original <- age_vertex * age_sd + age_mean
-print(paste("Original age at which fighters decline the most:", age_vertex_original))
+# Save summary to a text file
+summary_path <- file.path(output_dir, "model_summary.txt")
+writeLines(summary_output, summary_path)
 
-# Extract the mean and standard deviation used for standardizing opponent age
-opponent_age_mean <- mean(data_long$opponent_age)
-opponent_age_sd <- sd(data_long$opponent_age)
+# Save ANOVA results to a text file
+anova_output <- capture.output(anova(model))
+anova_path <- file.path(output_dir, "model_anova.txt")
+writeLines(anova_output, anova_path)
 
-# Convert the standardized opponent age to original age
-opponent_age_vertex_original <- opponent_age_vertex * opponent_age_sd + opponent_age_mean
-print(paste("Original age at which opponents are the easiest to beat:", opponent_age_vertex_original))
+# Extract random intercepts for fighters and opponents
+random_effects <- ranef(model)
 
-# Goodness of Fit Analysis
-# Residuals
-residuals <- residuals(model, type = "pearson")
+# Save fighter random intercepts to a text file
+fighter_intercepts <- random_effects$fighter
+fighter_intercepts_path <- file.path(output_dir, "fighter_random_intercepts.txt")
+write.table(fighter_intercepts, file = fighter_intercepts_path, sep = "\t", col.names = NA)
 
-# Plot residuals
-residual_plot <- ggplot(data_long, aes(x = fitted(model), y = residuals)) +
-  geom_point(alpha = 0.5) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(title = "Residuals vs Fitted Values", x = "Fitted Values", y = "Residuals")
-ggsave(file.path(output_dir, "residual_plot.png"), plot = residual_plot)
+# Save opponent random intercepts to a separate text file
+opponent_intercepts <- random_effects$opponent
+opponent_intercepts_path <- file.path(output_dir, "opponent_random_intercepts.txt")
+write.table(opponent_intercepts, file = opponent_intercepts_path, sep = "\t", col.names = NA)
 
-# ROC Curve
-roc_curve <- roc(data_long$outcome, fitted(model))
-auc <- auc(roc_curve)
+# 3D CHART
+# Generate a grid of values for age and opponent_age
+age_grid <- seq(min(data_long$age), max(data_long$age), length.out = 30)
+opponent_age_grid <- seq(min(data_long$opponent_age), max(data_long$opponent_age), length.out = 30)
 
-roc_plot <- ggplot(data = data.frame(tpr = roc_curve$sensitivities, fpr = 1 - roc_curve$specificities), 
-                   aes(x = fpr, y = tpr)) +
+# Create a data frame for predictions
+pred_data <- expand.grid(age = age_grid, opponent_age = opponent_age_grid)
+
+# Predict using the model (excluding random effects)
+pred_data$outcome_prob <- predict(model, newdata = pred_data, re.form = NA, type = "response")
+
+# Calculate confidence intervals
+pred_data$se <- predict(model, newdata = pred_data, re.form = NA, type = "link", se.fit = TRUE)$se.fit
+pred_data$lower_ci <- pred_data$outcome_prob - 1.96 * pred_data$se
+pred_data$upper_ci <- pred_data$outcome_prob + 1.96 * pred_data$se
+
+# Calculate prediction intervals
+pred_data$lower_pi <- pmax(pred_data$outcome_prob - 1.96 * sqrt(pred_data$se^2 + 1), 0)
+pred_data$upper_pi <- pmin(pred_data$outcome_prob + 1.96 * sqrt(pred_data$se^2 + 1), 1)
+
+# Create 3D plot with probabilities using plot3D
+png_path <- file.path(output_dir, "3D_plot_fixed_effects.png")
+
+# Open PNG device
+png(filename = png_path, width = 1600, height = 1200, res = 150)
+
+# Plot
+scatter3D(x = pred_data$age, y = pred_data$opponent_age, z = pred_data$outcome_prob,
+          xlab = "Fighter Age", ylab = "Opponent Age", zlab = "Predicted Win Probability (Fixed Effects Only)",
+          bty = "b2", colkey = FALSE, main = "Predicted Win Probability 3D Plot (Fixed Effects Only)")
+
+# Close PNG device
+dev.off()
+
+# Separate winning and losing fighters' ages
+winners <- data_long %>%
+  filter(outcome == 1) %>%
+  select(fight_id, age)
+
+losers <- data_long %>%
+  filter(outcome == 0) %>%
+  select(fight_id, age)
+
+total_ages <- data_long %>%
+  select(fight_id, age)
+
+# Create histograms and save to a PDF file
+pdf_path <- file.path(output_dir, "fighter_ages_histograms.pdf")
+pdf(pdf_path)
+
+# Winning fighters' age histogram
+hist_winners <- ggplot(winners, aes(x = age)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  ggtitle("Histogram of Winning Fighters' Ages") +
+  xlab("Age") +
+  ylab("Frequency") +
+  theme_minimal()
+print(hist_winners)
+
+# Losing fighters' age histogram
+hist_losers <- ggplot(losers, aes(x = age)) +
+  geom_histogram(binwidth = 1, fill = "red", color = "black") +
+  ggtitle("Histogram of Losing Fighters' Ages") +
+  xlab("Age") +
+  ylab("Frequency") +
+  theme_minimal()
+print(hist_losers)
+
+# Total age histogram
+hist_total <- ggplot(total_ages, aes(x = age)) +
+  geom_histogram(binwidth = 1, fill = "green", color = "black") +
+  ggtitle("Histogram of All Fighters' Ages") +
+  xlab("Age") +
+  ylab("Frequency") +
+  theme_minimal()
+print(hist_total)
+
+# Close the PDF device
+dev.off()
+
+# Marginal Effects Plot
+# Marginal effects plot for fighter's age
+age_effects <- Effect("age", model)
+png(file.path(output_dir, "effect_of_fighter_age.png"))
+plot(age_effects, main = "Effect of Fighter's Age on Outcome")
+dev.off()
+
+# Marginal effects plot for opponent's age
+opponent_age_effects <- Effect("opponent_age", model)
+png(file.path(output_dir, "effect_of_opponent_age.png"))
+plot(opponent_age_effects, main = "Effect of Opponent's Age on Outcome")
+dev.off()
+
+# Step 3: Finding Specific Ages of Decline
+# Create a sequence of ages to predict outcomes
+age_sequence <- seq(min(data_long$age), max(data_long$age), by = 1)
+prediction_data_age <- data.frame(age = age_sequence)
+prediction_data_age$opponent_age <- mean(data_long$opponent_age)
+prediction_data_age$fighter <- NA
+prediction_data_age$opponent <- NA
+
+# Predict probabilities for the age sequence
+predicted_probs_age <- predict(model, newdata = prediction_data_age, type = "response", re.form = NA)
+
+# Plot predicted probabilities against age
+plot_data_age <- data.frame(age = age_sequence, predicted_prob = predicted_probs_age)
+png(file.path(output_dir, "predicted_probabilities_vs_age.png"))
+ggplot(plot_data_age, aes(x = age, y = predicted_prob)) +
   geom_line() +
-  geom_abline(linetype = "dashed") +
-  labs(title = paste("ROC Curve (AUC =", round(auc, 2), ")"), x = "False Positive Rate", y = "True Positive Rate")
-ggsave(file.path(output_dir, "roc_plot.png"), plot = roc_plot)
+  labs(title = "Predicted Probabilities vs Age", x = "Age", y = "Predicted Probability") +
+  theme_minimal()
+dev.off()
 
-# Calculate the predicted probabilities of winning based on age and opponent's age
-predict_data <- data_long %>%
-  mutate(predicted_prob = predict(model, type = "response"))
+# Create a sequence of opponent ages to predict outcomes
+opponent_age_sequence <- seq(min(data_long$opponent_age), max(data_long$opponent_age), by = 1)
+prediction_data_opponent_age <- data.frame(opponent_age = opponent_age_sequence)
+prediction_data_opponent_age$age <- mean(data_long$age)
+prediction_data_opponent_age$fighter <- NA
+prediction_data_opponent_age$opponent <- NA
 
-# Probability of Winning by Age
-win_prob_by_age <- predict_data %>%
-  group_by(age) %>%
-  summarise(predicted_prob_mean = mean(predicted_prob))
+# Predict probabilities for the opponent age sequence
+predicted_probs_opponent_age <- predict(model, newdata = prediction_data_opponent_age, type = "response", re.form = NA)
 
-win_prob_by_age_plot <- ggplot(win_prob_by_age, aes(x = age, y = predicted_prob_mean)) +
+# Plot predicted probabilities against opponent age
+plot_data_opponent_age <- data.frame(opponent_age = opponent_age_sequence, predicted_prob = predicted_probs_opponent_age)
+png(file.path(output_dir, "predicted_probabilities_vs_opponent_age.png"))
+ggplot(plot_data_opponent_age, aes(x = opponent_age, y = predicted_prob)) +
+  geom_line() +
+  labs(title = "Predicted Probabilities vs Opponent Age", x = "Opponent Age", y = "Predicted Probability") +
+  theme_minimal()
+dev.off()
+
+# Identify specific ages of decline using the slope of the predicted probabilities
+slope_probs_age <- diff(predicted_probs_age)
+slope_probs_opponent_age <- diff(predicted_probs_opponent_age)
+
+# Fighter's decline start and most decline
+fighter_decline_start_age <- age_sequence[which.max(slope_probs_age)]
+fighter_most_decline_age <- age_sequence[which.min(slope_probs_age)]
+
+# Opponent's decline start and most decline
+opponent_decline_start_age <- opponent_age_sequence[which.max(slope_probs_opponent_age)]
+opponent_most_decline_age <- opponent_age_sequence[which.min(slope_probs_opponent_age)]
+
+# Calculate the average win percentage for different age ranges
+age_bins <- cut(data_long$age, breaks = seq(18, 45, by = 4), right = FALSE)
+age_bin_labels <- levels(age_bins)
+win_percentage_by_age <- data_long %>%
+  mutate(age_bin = age_bins) %>%
+  filter(!is.na(age_bin)) %>%
+  group_by(age_bin) %>%
+  summarise(win_percentage = mean(outcome)) %>%
+  ungroup()
+
+# Calculate the average predicted probability for different age ranges from effect plots
+pred_data_age_bins <- cut(pred_data$age, breaks = seq(18, 45, by = 4), right = FALSE)
+average_effect_by_age <- pred_data %>%
+  mutate(age_bin = pred_data_age_bins) %>%
+  filter(!is.na(age_bin)) %>%
+  group_by(age_bin) %>%
+  summarise(avg_effect = mean(outcome_prob)) %>%
+  ungroup()
+
+# Calculate the average win percentage and effect for opponent age
+opponent_age_bins <- cut(data_long$opponent_age, breaks = seq(18, 45, by = 4), right = FALSE)
+win_percentage_by_opponent_age <- data_long %>%
+  mutate(opponent_age_bin = opponent_age_bins) %>%
+  filter(!is.na(opponent_age_bin)) %>%
+  group_by(opponent_age_bin) %>%
+  summarise(win_percentage = mean(outcome)) %>%
+  ungroup()
+
+pred_data_opponent_age_bins <- cut(pred_data$opponent_age, breaks = seq(18, 45, by = 4), right = FALSE)
+average_effect_by_opponent_age <- pred_data %>%
+  mutate(opponent_age_bin = pred_data_opponent_age_bins) %>%
+  filter(!is.na(opponent_age_bin)) %>%
+  group_by(opponent_age_bin) %>%
+  summarise(avg_effect = mean(outcome_prob)) %>%
+  ungroup()
+
+# Additional Analysis: 5-Fold Cross-Validation
+set.seed(123)
+folds <- createFolds(data_long$outcome, k = 5, list = TRUE, returnTrain = FALSE)
+roc_curves <- list()
+auc_values <- numeric(length(folds))
+
+for(i in 1:length(folds)) {
+  test_indices <- folds[[i]]
+  train_data <- data_long[-test_indices, ]
+  test_data <- data_long[test_indices, ]
+  
+  # Ensuring levels match
+  train_data$fighter <- factor(train_data$fighter, levels = levels(data_long$fighter))
+  train_data$opponent <- factor(train_data$opponent, levels = levels(data_long$opponent))
+  test_data$fighter <- factor(test_data$fighter, levels = levels(data_long$fighter))
+  test_data$opponent <- factor(test_data$opponent, levels = levels(data_long$opponent))
+  
+  # Fit the model for the training data
+  model_cv <- glmer(outcome ~ poly(age, 2) + poly(opponent_age, 2) + (1|fighter) + (1|opponent), 
+                    data = train_data, family = binomial)
+  
+  # Predict on test data
+  test_data$predicted_prob <- predict(model_cv, newdata = test_data, type = "response", allow.new.levels = TRUE)
+  
+  # ROC curve
+  roc_curve <- roc(test_data$outcome, test_data$predicted_prob)
+  roc_curves[[i]] <- roc_curve
+  auc_values[i] <- roc_curve$auc
+}
+
+mean_auc <- mean(auc_values)
+
+png(file.path(output_dir, "roc_curves.png"))
+plot(roc_curves[[1]], main = "ROC Curves for Each Fold", col = 1)
+for (i in 2:length(roc_curves)) {
+  plot(roc_curves[[i]], add = TRUE, col = i)
+}
+legend("bottomright", legend = paste("Fold", 1:length(roc_curves)), col = 1:length(roc_curves), lty = 1)
+dev.off()
+
+# Save metrics to a text file
+metrics_file <- file.path(output_dir, "metrics.txt")
+
+metrics_output <- c(
+  paste("Mean AUC across 5 folds:", mean_auc),
+  "Ages where fighter performance declines (turning points):",
+  paste("Fighter decline start age:", fighter_decline_start_age),
+  paste("Fighter most decline age:", fighter_most_decline_age),
+  "Ages where opponents become easier (turning points for opponent age):",
+  paste("Opponent decline start age:", opponent_decline_start_age),
+  paste("Opponent most decline age:", opponent_most_decline_age),
+  "\nAverage Win Percentage by Age Group:"
+)
+
+# Add win percentages by age group
+for (i in 1:nrow(win_percentage_by_age)) {
+  metrics_output <- c(metrics_output, paste("Age Group:", win_percentage_by_age$age_bin[i], "Win Percentage:", win_percentage_by_age$win_percentage[i]))
+}
+
+metrics_output <- c(metrics_output, "\nAverage Effect by Age Group:")
+
+# Add average effects by age group
+for (i in 1:nrow(average_effect_by_age)) {
+  metrics_output <- c(metrics_output, paste("Age Group:", average_effect_by_age$age_bin[i], "Effect:", average_effect_by_age$avg_effect[i]))
+}
+
+metrics_output <- c(metrics_output, "\nAverage Win Percentage by Opponent Age Group:")
+
+# Add win percentages by opponent age group
+for (i in 1:nrow(win_percentage_by_opponent_age)) {
+  metrics_output <- c(metrics_output, paste("Opponent Age Group:", win_percentage_by_opponent_age$opponent_age_bin[i], "Win Percentage:", win_percentage_by_opponent_age$win_percentage[i]))
+}
+
+metrics_output <- c(metrics_output, "\nAverage Effect by Opponent Age Group:")
+
+# Add average effects by opponent age group
+for (i in 1:nrow(average_effect_by_opponent_age)) {
+  metrics_output <- c(metrics_output, paste("Opponent Age Group:", average_effect_by_opponent_age$opponent_age_bin[i], "Effect:", average_effect_by_opponent_age$avg_effect[i]))
+}
+
+writeLines(metrics_output, metrics_file)
+
+# Residual Analysis
+# Deviance Residuals
+deviance_residuals <- residuals(model, type = "deviance")
+png(file.path(output_dir, "deviance_residuals.png"))
+plot(deviance_residuals, main = "Deviance Residuals of the Model")
+abline(h = 0, col = "red")
+dev.off()
+
+# Residuals vs Fitted Values
+fitted_values <- fitted(model)
+png(file.path(output_dir, "residuals_vs_fitted.png"))
+plot(fitted_values, deviance_residuals,
+     main = "Residuals vs Fitted Values",
+     xlab = "Fitted Values",
+     ylab = "Deviance Residuals")
+abline(h = 0, col = "red")
+dev.off()
+
+# Q-Q Plot
+png(file.path(output_dir, "qq_plot.png"))
+qqnorm(deviance_residuals)
+qqline(deviance_residuals, col = "red")
+dev.off()
+
+# Random Effects Plot
+png(file.path(output_dir, "random_effects_plot.png"))
+dotplot(ranef(model, condVar = TRUE))
+dev.off()
+
+# Residuals by Groups
+png(file.path(output_dir, "residuals_by_groups.png"))
+plot(data_long$fighter, deviance_residuals,
+     main = "Residuals by Fighter",
+     xlab = "Fighter",
+     ylab = "Deviance Residuals")
+abline(h = 0, col = "red")
+dev.off()
+
+png(file.path(output_dir, "residuals_by_opponent.png"))
+plot(data_long$opponent, deviance_residuals,
+     main = "Residuals by Opponent",
+     xlab = "Opponent",
+     ylab = "Deviance Residuals")
+abline(h = 0, col = "red")
+dev.off()
+
+# Individual plots for each fighter
+fighters <- unique(data_long$fighter)
+for (fighter in fighters) {
+  fighter_data <- data_long %>% filter(fighter == !!fighter)
+  fighter_residuals <- deviance_residuals[data_long$fighter == fighter]
+  png(file.path(mixed_effects_dir, paste0(fighter, "_residuals.png")))
+  plot(fighter_data$age, fighter_residuals,
+       main = paste("Residuals for Fighter", fighter),
+       xlab = "Age",
+       ylab = "Deviance Residuals")
+  abline(h = 0, col = "red")
+  dev.off()
+}
+
+# Prediction Plots
+png(file.path(output_dir, "predicted_probabilities_vs_actual_outcomes.png"))
+ggplot(data_long, aes(x = age, y = fitted(model), color = factor(outcome))) +
   geom_point() +
   geom_smooth(method = "loess") +
-  labs(title = "Probability of Winning by Age", x = "Age", y = "Probability of Winning")
-ggsave(file.path(output_dir, "win_prob_by_age_plot.png"), plot = win_prob_by_age_plot)
-write.csv(win_prob_by_age, file.path(output_dir, "win_prob_by_age.csv"))
-
-# Probability of Winning by Opponent Age
-win_prob_by_opponent_age <- predict_data %>%
-  group_by(opponent_age) %>%
-  summarise(predicted_prob_mean = mean(predicted_prob))
-
-win_prob_by_opponent_age_plot <- ggplot(win_prob_by_opponent_age, aes(x = opponent_age, y = predicted_prob_mean)) +
-  geom_point() +
-  geom_smooth(method = "loess") +
-  labs(title = "Probability of Winning by Opponent Age", x = "Opponent Age", y = "Probability of Winning")
-ggsave(file.path(output_dir, "win_prob_by_opponent_age_plot.png"), plot = win_prob_by_opponent_age_plot)
-write.csv(win_prob_by_opponent_age, file.path(output_dir, "win_prob_by_opponent_age.csv"))
-
-# Additional Methods
-# QQ Plot
-qq_plot <- ggplot(data.frame(residuals = residuals), aes(sample = residuals)) +
-  stat_qq() +
-  stat_qq_line() +
-  labs(title = "QQ Plot of Residuals", x = "Theoretical Quantiles", y = "Sample Quantiles")
-ggsave(file.path(output_dir, "qq_plot.png"), plot = qq_plot)
-
-# Leverage Plot
-leverage <- hatvalues(model)
-leverage_plot <- ggplot(data_long, aes(x = leverage, y = residuals)) +
-  geom_point(alpha = 0.5) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  labs(title = "Leverage vs Residuals", x = "Leverage", y = "Residuals")
-ggsave(file.path(output_dir, "leverage_plot.png"), plot = leverage_plot)
-
-# Smoothing Methods
-
-# 1. Moving Average
-win_prob_by_age$predicted_prob_ma <- rollmean(win_prob_by_age$predicted_prob_mean, k = 5, fill = NA)
-
-moving_average_plot <- ggplot(win_prob_by_age, aes(x = age)) +
-  geom_line(aes(y = predicted_prob_mean, color = "Predicted Probability")) +
-  geom_line(aes(y = predicted_prob_ma, color = "Moving Average")) +
-  labs(title = "Probability of Winning by Age with Moving Average", x = "Age", y = "Probability of Winning") +
-  scale_color_manual(values = c("Predicted Probability" = "blue", "Moving Average" = "red"))
-ggsave(file.path(output_dir, "moving_average_plot.png"), plot = moving_average_plot)
-
-# 2. LOESS
-loess_plot <- ggplot(win_prob_by_age, aes(x = age, y = predicted_prob_mean)) +
-  geom_point() +
-  geom_smooth(method = "loess") +
-  labs(title = "Probability of Winning by Age with LOESS Smoothing", x = "Age", y = "Probability of Winning")
-ggsave(file.path(output_dir, "loess_plot.png"), plot = loess_plot)
-
-# 3. Spline
-win_prob_by_age_no_na <- win_prob_by_age %>%
-  filter(!is.na(predicted_prob_mean) & !is.infinite(predicted_prob_mean))
-
-spline_fit <- smooth.spline(win_prob_by_age_no_na$age, win_prob_by_age_no_na$predicted_prob_mean)
-spline_data <- data.frame(age = win_prob_by_age_no_na$age, predicted_prob_spline = predict(spline_fit)$y)
-
-spline_plot <- ggplot(spline_data, aes(x = age, y = predicted_prob_spline)) +
-  geom_line(color = "green") +
-  labs(title = "Probability of Winning by Age with Spline Smoothing", x = "Age", y = "Probability of Winning")
-ggsave(file.path(output_dir, "spline_plot.png"), plot = spline_plot)
+  labs(title = "Predicted Probabilities vs Actual Outcomes", x = "Age", y = "Predicted Probability") +
+  scale_color_discrete(name = "Outcome")
+dev.off()
