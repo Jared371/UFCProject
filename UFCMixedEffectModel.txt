@@ -71,17 +71,41 @@ data_long$opponent <- factor(data_long$opponent)
 model <- glmer(outcome ~ poly(age, 2) + poly(opponent_age, 2) + (1|fighter) + (1|opponent), 
                data = data_long, family = binomial)
 
-# Fit the null model
+# Fit the null model (random effects only)
 null_model <- glmer(outcome ~ 1 + (1|fighter) + (1|opponent), 
                     data = data_long, family = binomial)
 
-# Perform Likelihood Ratio Test
-lrt_result <- anova(null_model, model)
+# Fit the fixed effects model (fixed effects only)
+fixed_model <- glm(outcome ~ poly(age, 2) + poly(opponent_age, 2), 
+                   data = data_long, family = binomial)
+
+# Perform Likelihood Ratio Tests
+lrt_null_vs_full <- anova(null_model, model)
+lrt_fixed_vs_full <- anova(model, fixed_model, test="Chisq")
 
 # Save LRT results to a text file
-lrt_output <- capture.output(lrt_result)
-lrt_path <- file.path(output_dir, "likelihood_ratio_test.txt")
-writeLines(lrt_output, lrt_path)
+lrt_null_vs_full_output <- capture.output(lrt_null_vs_full)
+lrt_fixed_vs_full_output <- capture.output(lrt_fixed_vs_full)
+lrt_null_vs_full_path <- file.path(output_dir, "lrt_null_vs_full.txt")
+lrt_fixed_vs_full_path <- file.path(output_dir, "lrt_fixed_vs_full.txt")
+writeLines(lrt_null_vs_full_output, lrt_null_vs_full_path)
+writeLines(lrt_fixed_vs_full_output, lrt_fixed_vs_full_path)
+
+# Interpret the LRT results
+lrt_null_vs_full_p_value <- lrt_null_vs_full[2, "Pr(>Chisq)"]
+lrt_fixed_vs_full_p_value <- lrt_fixed_vs_full[2, "Pr(>Chisq)"]
+
+if (!is.null(lrt_null_vs_full_p_value) && lrt_null_vs_full_p_value < 0.05) {
+  lrt_null_vs_full_interpretation <- "The mixed effects model significantly improves the fit over the random effects model."
+} else {
+  lrt_null_vs_full_interpretation <- "The mixed effects model does not significantly improve the fit over the random effects model."
+}
+
+if (!is.null(lrt_fixed_vs_full_p_value) && lrt_fixed_vs_full_p_value < 0.05) {
+  lrt_fixed_vs_full_interpretation <- "The mixed effects model significantly improves the fit over the fixed effects model."
+} else {
+  lrt_fixed_vs_full_interpretation <- "The mixed effects model does not significantly improve the fit over the fixed effects model."
+}
 
 # Capture the summary output
 summary_output <- capture.output(summary(model))
@@ -145,14 +169,14 @@ dev.off()
 # Separate winning and losing fighters' ages
 winners <- data_long %>%
   filter(outcome == 1) %>%
-  select(fight_id, age)
+  dplyr::select(fight_id, age)
 
 losers <- data_long %>%
   filter(outcome == 0) %>%
-  select(fight_id, age)
+  dplyr::select(fight_id, age)
 
 total_ages <- data_long %>%
-  select(fight_id, age)
+  dplyr::select(fight_id, age)
 
 # Create histograms and save to a PDF file
 pdf_path <- file.path(output_dir, "fighter_ages_histograms.pdf")
@@ -245,16 +269,17 @@ slope_probs_age <- diff(predicted_probs_age)
 slope_probs_opponent_age <- diff(predicted_probs_opponent_age)
 
 # Fighter's decline start and most decline
-fighter_decline_start_age <- age_sequence[which.max(slope_probs_age)]
-fighter_most_decline_age <- age_sequence[which.min(slope_probs_age)]
+fighter_decline_start_age <- age_sequence[which.max(predicted_probs_age)]  # Maximum predicted probability
+fighter_most_decline_age <- age_sequence[which.min(slope_probs_age)]  # Most negative slope
 
 # Opponent's decline start and most decline
-opponent_decline_start_age <- opponent_age_sequence[which.max(slope_probs_opponent_age)]
-opponent_most_decline_age <- opponent_age_sequence[which.min(slope_probs_opponent_age)]
+opponent_decline_start_age <- opponent_age_sequence[which.min(predicted_probs_opponent_age)]  # Minimum predicted probability
+opponent_most_decline_age <- opponent_age_sequence[which.max(slope_probs_opponent_age)]  # Most positive slope
 
 # Calculate the average win percentage for different age ranges
-age_bins <- cut(data_long$age, breaks = seq(18, 45, by = 4), right = FALSE)
-age_bin_labels <- levels(age_bins)
+age_bins <- cut(data_long$age, breaks = seq(18, 45, by = 4), right = FALSE, include.lowest = TRUE, labels = FALSE)
+age_bin_labels <- paste0("(", seq(18, 41, by = 4), ",", seq(22, 45, by = 4), "]")
+age_bins <- factor(age_bins, labels = age_bin_labels)
 win_percentage_by_age <- data_long %>%
   mutate(age_bin = age_bins) %>%
   filter(!is.na(age_bin)) %>%
@@ -263,7 +288,9 @@ win_percentage_by_age <- data_long %>%
   ungroup()
 
 # Calculate the average predicted probability for different age ranges from effect plots
-pred_data_age_bins <- cut(pred_data$age, breaks = seq(18, 45, by = 4), right = FALSE)
+pred_data_age_bins <- cut(pred_data$age, breaks = seq(18, 45, by = 4), right = FALSE, include.lowest = TRUE, labels = FALSE)
+pred_data_age_bin_labels <- paste0("(", seq(18, 41, by = 4), ",", seq(22, 45, by = 4), "]")
+pred_data_age_bins <- factor(pred_data_age_bins, labels = pred_data_age_bin_labels)
 average_effect_by_age <- pred_data %>%
   mutate(age_bin = pred_data_age_bins) %>%
   filter(!is.na(age_bin)) %>%
@@ -272,7 +299,9 @@ average_effect_by_age <- pred_data %>%
   ungroup()
 
 # Calculate the average win percentage and effect for opponent age
-opponent_age_bins <- cut(data_long$opponent_age, breaks = seq(18, 45, by = 4), right = FALSE)
+opponent_age_bins <- cut(data_long$opponent_age, breaks = seq(18, 45, by = 4), right = FALSE, include.lowest = TRUE, labels = FALSE)
+opponent_age_bin_labels <- paste0("(", seq(18, 41, by = 4), ",", seq(22, 45, by = 4), "]")
+opponent_age_bins <- factor(opponent_age_bins, labels = opponent_age_bin_labels)
 win_percentage_by_opponent_age <- data_long %>%
   mutate(opponent_age_bin = opponent_age_bins) %>%
   filter(!is.na(opponent_age_bin)) %>%
@@ -280,7 +309,9 @@ win_percentage_by_opponent_age <- data_long %>%
   summarise(win_percentage = mean(outcome)) %>%
   ungroup()
 
-pred_data_opponent_age_bins <- cut(pred_data$opponent_age, breaks = seq(18, 45, by = 4), right = FALSE)
+pred_data_opponent_age_bins <- cut(pred_data$opponent_age, breaks = seq(18, 45, by = 4), right = FALSE, include.lowest = TRUE, labels = FALSE)
+pred_data_opponent_age_bin_labels <- paste0("(", seq(18, 41, by = 4), ",", seq(22, 45, by = 4), "]")
+pred_data_opponent_age_bins <- factor(pred_data_opponent_age_bins, labels = pred_data_opponent_age_bin_labels)
 average_effect_by_opponent_age <- pred_data %>%
   mutate(opponent_age_bin = pred_data_opponent_age_bins) %>%
   filter(!is.na(opponent_age_bin)) %>%
@@ -339,6 +370,9 @@ metrics_output <- c(
   "Ages where opponents become easier (turning points for opponent age):",
   paste("Opponent decline start age:", opponent_decline_start_age),
   paste("Opponent most decline age:", opponent_most_decline_age),
+  "\nLikelihood Ratio Test Results:",
+  lrt_null_vs_full_interpretation,
+  lrt_fixed_vs_full_interpretation,
   "\nAverage Win Percentage by Age Group:"
 )
 
@@ -370,57 +404,11 @@ for (i in 1:nrow(average_effect_by_opponent_age)) {
 
 writeLines(metrics_output, metrics_file)
 
-# Residual Analysis
-# Deviance Residuals
-deviance_residuals <- residuals(model, type = "deviance")
-png(file.path(output_dir, "deviance_residuals.png"))
-plot(deviance_residuals, main = "Deviance Residuals of the Model")
-abline(h = 0, col = "red")
-dev.off()
-
-# Residuals vs Fitted Values
-fitted_values <- fitted(model)
-png(file.path(output_dir, "residuals_vs_fitted.png"))
-plot(fitted_values, deviance_residuals,
-     main = "Residuals vs Fitted Values",
-     xlab = "Fitted Values",
-     ylab = "Deviance Residuals")
-abline(h = 0, col = "red")
-dev.off()
-
-# Q-Q Plot
-png(file.path(output_dir, "qq_plot.png"))
-qqnorm(deviance_residuals)
-qqline(deviance_residuals, col = "red")
-dev.off()
-
-# Random Effects Plot
-png(file.path(output_dir, "random_effects_plot.png"))
-dotplot(ranef(model, condVar = TRUE))
-dev.off()
-
-# Residuals by Groups
-png(file.path(output_dir, "residuals_by_groups.png"))
-plot(data_long$fighter, deviance_residuals,
-     main = "Residuals by Fighter",
-     xlab = "Fighter",
-     ylab = "Deviance Residuals")
-abline(h = 0, col = "red")
-dev.off()
-
-png(file.path(output_dir, "residuals_by_opponent.png"))
-plot(data_long$opponent, deviance_residuals,
-     main = "Residuals by Opponent",
-     xlab = "Opponent",
-     ylab = "Deviance Residuals")
-abline(h = 0, col = "red")
-dev.off()
-
 # Individual plots for each fighter
 fighters <- unique(data_long$fighter)
 for (fighter in fighters) {
   fighter_data <- data_long %>% filter(fighter == !!fighter)
-  fighter_residuals <- deviance_residuals[data_long$fighter == fighter]
+  fighter_residuals <- resid(model)[data_long$fighter == fighter]
   png(file.path(mixed_effects_dir, paste0(fighter, "_residuals.png")))
   plot(fighter_data$age, fighter_residuals,
        main = paste("Residuals for Fighter", fighter),
@@ -429,12 +417,3 @@ for (fighter in fighters) {
   abline(h = 0, col = "red")
   dev.off()
 }
-
-# Prediction Plots
-png(file.path(output_dir, "predicted_probabilities_vs_actual_outcomes.png"))
-ggplot(data_long, aes(x = age, y = fitted(model), color = factor(outcome))) +
-  geom_point() +
-  geom_smooth(method = "loess") +
-  labs(title = "Predicted Probabilities vs Actual Outcomes", x = "Age", y = "Predicted Probability") +
-  scale_color_discrete(name = "Outcome")
-dev.off()
