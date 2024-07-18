@@ -24,7 +24,7 @@ if (!dir.exists(mixed_effects_dir)) {
 }
 
 # Load the data
-data <- read.csv("C:\\Users\\Jared\\Desktop\\UFCData5.csv")
+data <- read.csv("C:\\Users\\Jared\\Desktop\\UFCData.csv")
 
 # Recursive function to filter out fighters with less than 5 fights
 filter_fighters_recursive <- function(data) {
